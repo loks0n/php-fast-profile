@@ -7,7 +7,13 @@ all-features = true
 # Fail on any unmaintained or vulnerable advisory; allow yanked crates as a
 # warning since they may show up transiently.
 yanked = "warn"
-ignore = []
+ignore = [
+    # `paste` is archived but still pulled in by ratatui's dependency tree.
+    # It's a pure proc-macro crate (no runtime, no I/O, no security surface),
+    # and ratatui upstream tracks the migration. Re-evaluate when ratatui
+    # ships a release that drops it.
+    "RUSTSEC-2024-0436",
+]
 
 [bans]
 multiple-versions = "warn"
