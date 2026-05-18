@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "tag to release (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            install: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends musl-tools
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            install: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends musl-tools
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: install build deps
+        if: matrix.install
+        run: ${{ matrix.install }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: package
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          out="pfp-${tag}-${{ matrix.target }}"
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/pfp" "dist/${out}"
+          cd dist
+          tar czf "${out}.tar.gz" "${out}"
+          sha256sum "${out}.tar.gz" > "${out}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pfp-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    name: publish github release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: list artifacts
+        run: ls -la artifacts/
+      - name: create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

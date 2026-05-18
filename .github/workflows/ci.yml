@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: default
+            flags: ""
+          - features: minimal
+            flags: "--no-default-features"
+          - features: tui-only
+            flags: "--no-default-features --features tui"
+          - features: pprof-only
+            flags: "--no-default-features --features pprof"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-${{ matrix.features }}
+      - run: cargo clippy --all-targets ${{ matrix.flags }} -- -D warnings
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources advisories
+
+  test:
+    name: test (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: cargo test (default features)
+        run: cargo test --target ${{ matrix.target }}
+      - name: cargo test (--no-default-features)
+        run: cargo test --target ${{ matrix.target }} --no-default-features
+      - name: cargo build --release
+        run: cargo build --release --target ${{ matrix.target }}
+
+  smoke:
+    name: smoke (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-smoke
+      - name: install Sury PHP 8.3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl ca-certificates gnupg lsb-release
+          curl -sSLo /tmp/sury.gpg https://packages.sury.org/php/apt.gpg
+          sudo install -m 644 /tmp/sury.gpg /usr/share/keyrings/sury.gpg
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/keyrings/sury.gpg] https://packages.sury.org/php/ ${VERSION_CODENAME} main" \
+            | sudo tee /etc/apt/sources.list.d/sury.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends php8.3-cli
+      - name: build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: allow ptrace
+        run: |
+          echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope || true
+      - name: smoke
+        run: |
+          cat > /tmp/spin.php <<'PHP'
+          <?php
+          class W { public function spin(): never { while (true) $this->a(); }
+          public function a(): void { $this->b(); }
+          public function b(): void { usleep(500); } }
+          (new W())->spin();
+          PHP
+          php8.3 /tmp/spin.php &
+          PID=$!
+          sleep 1
+          ./target/${{ matrix.target }}/release/pfp -p $PID -d 2 -H 99 -o /tmp/out.txt
+          kill $PID || true
+          wait || true
+          test "$(grep -c '^0 ' /tmp/out.txt)" -ge 100
+          grep -q 'W::a' /tmp/out.txt
+          grep -q 'W::b' /tmp/out.txt

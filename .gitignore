@@ -1,0 +1,22 @@
+# Build artifacts
+/target
+
+# IDE / editor
+/.idea
+/.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local benchmark / verification artifacts (these scripts dump CSV + outputs)
+/bench-results.csv
+*.pb.gz
+*.folded
+*.profile
+
+# Coverage / profiling
+*.profraw
+/coverage
