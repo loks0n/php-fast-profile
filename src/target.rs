@@ -55,19 +55,26 @@ impl Target {
 
         let remote = Remote::new(pid);
 
+        // PHP version detection, in priority order:
+        //   1. user-provided --php-version
+        //   2. literal "8.x.y" string in the binary's .rodata
+        //   3. decode the php_version() accessor (8.3+ only) at runtime
+        //
+        // We prefer .rodata scanning over (3) because real PHP builds have
+        // accumulated decorations on the accessor — Intel CET endbr64,
+        // aarch64 BTI landing pads, PAC paciasp, full stack frames — that
+        // make instruction-level decoding fragile across distros.
         let php_version = if let Some(s) = opts.php_version_string {
             s.to_string()
+        } else if let Some(version) = symbols::find_php_version_in_elf(&elf_map) {
+            tracing::debug!("php_version detected via .rodata scan: {version}");
+            version
         } else if let Some(addr) = symbols.php_version {
             read_php_version(&remote, addr).context("reading php_version()")?
-        } else if let Some(version) = symbols::find_php_version_in_elf(&elf_map) {
-            // PHP 8.0 / 8.1 / 8.2 don't export `php_version` as a function;
-            // fall back to scanning the ELF for the literal version string.
-            tracing::debug!("php_version symbol absent; scanned .rodata: {version}");
-            version
         } else {
             return Err(anyhow!(
-                "could not determine PHP version: php_version symbol absent, \
-                 no version literal found in .rodata, and --php-version not given"
+                "could not determine PHP version: no version literal found \
+                 in .rodata, no php_version symbol, and --php-version not given"
             ));
         };
 
