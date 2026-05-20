@@ -33,8 +33,8 @@ existing alternatives.
   via `pahole` against Sury's debug builds. Drift between minors is handled
   by a single layout table.
 - **Linux x86_64 and aarch64.** Same offsets, separate prologue decoders.
-- **Honest about limits.** ZTS detection works; ZTS attach is not yet
-  implemented and surfaces a clear error rather than producing garbage.
+- **NTS and ZTS.** Both build flavours work; ZTS attach walks TSRM via a
+  short ptrace read of the target thread's TLS base register.
 
 ## Install
 
@@ -115,13 +115,13 @@ new fpm workers.
 
 ## Status
 
-- [x] PHP 8.0, 8.1, 8.2, 8.3, 8.4, 8.5 NTS — offsets pahole-verified
+- [x] PHP 8.0, 8.1, 8.2, 8.3, 8.4, 8.5 — NTS and ZTS, offsets verified via
+      `offsetof()` against the official `php:X.Y[-zts]` images
 - [x] Linux x86_64 + aarch64
 - [x] Single-PID + multi-PID + auto-discovery
 - [x] `stacks` / `folded` / `pprof` / `top` output
 - [x] Container-aware attach
 - [x] Stripped-binary support (with manual EG override)
-- [ ] ZTS support (detected but not yet implemented)
 - [ ] macOS (requires Apple-signed binary; tracked as future work)
 - [ ] Pyroscope / OTLP push mode (planned as a sidecar binary)
 

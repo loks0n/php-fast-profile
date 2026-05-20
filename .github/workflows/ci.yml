@@ -140,3 +140,61 @@ jobs:
           test "$(grep -c '^0 ' /tmp/out.txt)" -ge 100
           grep -q 'W::a' /tmp/out.txt
           grep -q 'W::b' /tmp/out.txt
+
+  smoke-zts:
+    name: smoke-zts (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            php_image: php:8.3-zts
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            php_image: php:8.3-zts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}-smoke-zts
+      - name: build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: smoke (ZTS)
+        # Run the ZTS PHP inside the official php:X.Y-zts image (the only
+        # convenient source of prebuilt ZTS binaries — Sury doesn't ship
+        # them). pfp runs inside the same container so we don't need to
+        # plumb pid namespaces between host and container.
+        run: |
+          cat > /tmp/spin.php <<'PHP'
+          <?php
+          class W { public function spin(): never { while (true) $this->a(); }
+          public function a(): void { $this->b(); }
+          public function b(): void { usleep(500); } }
+          (new W())->spin();
+          PHP
+          BIN=./target/${{ matrix.target }}/release/pfp
+          docker run -d --name php-zts \
+            --cap-add=SYS_PTRACE \
+            -v /tmp/spin.php:/spin.php:ro \
+            -v "$(realpath $BIN):/pfp:ro" \
+            ${{ matrix.php_image }} \
+            php /spin.php
+          sleep 1
+          docker exec php-zts php -i 2>/dev/null | grep -i 'thread safety' \
+            | grep -qi enabled
+          PHP_PID=$(docker exec php-zts pgrep -n -x php)
+          test -n "$PHP_PID"
+          docker exec php-zts /pfp -p "$PHP_PID" -d 2 -H 99 -o /tmp/out.txt
+          OUT=$(docker exec php-zts cat /tmp/out.txt)
+          docker rm -f php-zts
+          echo "$OUT" | head -20
+          test "$(echo "$OUT" | grep -c '^0 ')" -ge 100
+          echo "$OUT" | grep -q 'W::a'
+          echo "$OUT" | grep -q 'W::b'

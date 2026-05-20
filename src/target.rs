@@ -4,6 +4,7 @@ use crate::offsets::{self, VersionLayout};
 use crate::proc;
 use crate::remote::Remote;
 use crate::symbols::{self, ResolveOptions, Symbols};
+use crate::tls;
 use crate::zend::{self, Frame, StackWalker};
 
 #[derive(Default)]
@@ -53,7 +54,25 @@ impl Target {
         )
         .with_context(|| format!("resolving symbols in {bin_path}"))?;
 
+        let mut symbols = symbols;
         let remote = Remote::new(pid);
+
+        // ZTS: if we don't already have a static EG (none of the symbol/
+        // override paths resolved one — symbols.executor_globals will be 0),
+        // resolve it now via TSRM. We do this before reading php_version()
+        // so that any TSRM-cache failures surface as ZTS errors rather than
+        // the more confusing version-detection errors that would follow.
+        if let Some(zts) = symbols.zts
+            && symbols.executor_globals == 0
+        {
+            symbols.executor_globals = tls::resolve_zts_executor_globals(
+                &remote,
+                pid,
+                zts.tcb_offset_fn,
+                zts.eg_offset_var,
+            )
+            .with_context(|| format!("resolving per-thread executor_globals for ZTS pid {pid}"))?;
+        }
 
         // PHP version detection, in priority order:
         //   1. user-provided --php-version

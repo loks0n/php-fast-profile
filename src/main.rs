@@ -10,6 +10,7 @@ mod remote;
 mod sampler;
 mod symbols;
 mod target;
+mod tls;
 #[cfg(feature = "tui")]
 mod tui;
 mod zend;

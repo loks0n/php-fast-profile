@@ -6,8 +6,26 @@ use std::collections::HashMap;
 
 /// Resolved virtual addresses (post-relocation, ready for remote reads).
 pub struct Symbols {
+    /// For NTS: absolute address of the `executor_globals` global.
+    /// For ZTS: this is the address of the TSRM-cache slot (resolved at
+    /// attach time by the TLS reader); see `Zts` for the inputs.
     pub executor_globals: u64,
     pub php_version: Option<u64>,
+    /// Set when the target is a ZTS build. Holds the addresses needed by the
+    /// TLS reader to resolve the calling thread's `executor_globals`.
+    pub zts: Option<Zts>,
+}
+
+/// ZTS attach prerequisites — addresses of the symbols we walk to find the
+/// per-thread `executor_globals` pointer.
+#[derive(Debug, Clone, Copy)]
+pub struct Zts {
+    /// Address of the `tsrm_get_ls_cache_tcb_offset` accessor function.
+    /// Decoded at attach time to a constant TLS slot offset.
+    pub tcb_offset_fn: u64,
+    /// Address of the `executor_globals_offset` global (a `size_t` value
+    /// holding the offset *into* the per-thread cache where EG lives).
+    pub eg_offset_var: u64,
 }
 
 pub struct ResolveOptions<'a> {
@@ -57,8 +75,14 @@ pub fn resolve(elf_bytes: &[u8], opts: ResolveOptions<'_>) -> Result<Symbols> {
     let mut wanted: HashMap<&str, Option<u64>> = HashMap::from([
         ("executor_globals", None),
         ("php_version", None),
-        // ZTS-only: replaces the global executor_globals with a per-thread cache.
+        // ZTS-only: per-thread cache replaces the single global EG.
+        // `tsrm_get_ls_cache_tcb_offset` is a small accessor that returns the
+        // TLS slot offset of `_tsrm_ls_cache` as a constant — decoding it at
+        // attach time avoids parsing PT_TLS / link_map for the static TLS
+        // layout. `executor_globals_offset` is a runtime-initialised size_t
+        // holding the offset into that cache where EG lives.
         ("tsrm_get_ls_cache", None),
+        ("tsrm_get_ls_cache_tcb_offset", None),
         ("executor_globals_offset", None),
     ]);
     let mut scan = |sym: &dyn ObjectSymbol| {
@@ -79,6 +103,14 @@ pub fn resolve(elf_bytes: &[u8], opts: ResolveOptions<'_>) -> Result<Symbols> {
     let is_zts =
         wanted["tsrm_get_ls_cache"].is_some() || wanted["executor_globals_offset"].is_some();
 
+    let zts = resolve_zts(
+        wanted["tsrm_get_ls_cache_tcb_offset"],
+        wanted["executor_globals_offset"],
+        is_zts,
+        bias,
+        opts.label,
+    )?;
+
     let executor_globals = resolve_executor_globals(
         opts.executor_globals_override,
         wanted["executor_globals"],
@@ -98,6 +130,7 @@ pub fn resolve(elf_bytes: &[u8], opts: ResolveOptions<'_>) -> Result<Symbols> {
     Ok(Symbols {
         executor_globals,
         php_version,
+        zts,
     })
 }
 
@@ -111,9 +144,42 @@ fn apply_override(addr: u64, load_base: u64) -> u64 {
     }
 }
 
+/// Build the ZTS prerequisites from the symbol scan results. Pure for
+/// unit testing.
+///
+/// - When `is_zts` is false, returns `Ok(None)`.
+/// - When `is_zts` is true, both `tcb_offset_fn` and `eg_offset_var` must be
+///   present; missing either is an error (binary too stripped).
+fn resolve_zts(
+    tcb_offset_fn: Option<u64>,
+    eg_offset_var: Option<u64>,
+    is_zts: bool,
+    bias: u64,
+    label: &str,
+) -> Result<Option<Zts>> {
+    if !is_zts {
+        return Ok(None);
+    }
+    match (tcb_offset_fn, eg_offset_var) {
+        (Some(tcb), Some(eg)) => Ok(Some(Zts {
+            tcb_offset_fn: tcb + bias,
+            eg_offset_var: eg + bias,
+        })),
+        _ => Err(anyhow!(
+            "{label} appears to be a ZTS build but is missing one of \
+             tsrm_get_ls_cache_tcb_offset / executor_globals_offset \
+             (binary too stripped for ZTS attach)"
+        )),
+    }
+}
+
 /// Pure dispatch from "what symbols did we find" + "what overrides did the
 /// user provide" to "the absolute address to read EG from, or a clear error".
 /// Extracted for unit testing.
+///
+/// For ZTS builds, returns 0 — the real EG address is resolved per-thread at
+/// attach time by walking TSRM. The `Zts` struct on `Symbols` carries the
+/// addresses needed for that walk.
 fn resolve_executor_globals(
     override_addr: Option<u64>,
     sym_addr: Option<u64>,
@@ -126,12 +192,8 @@ fn resolve_executor_globals(
     match (override_addr, sym_addr) {
         (Some(addr), _) => Ok(apply_override(addr, load_base)),
         (None, Some(rel)) => Ok(rel + bias),
-        (None, None) if is_zts => Err(anyhow!(
-            "{label} appears to be a ZTS (thread-safe) PHP build. ZTS \
-             attach is not yet supported — see docs/development.md \
-             (\"ZTS support\" section). For NTS-only builds, install \
-             the non-ZTS package."
-        )),
+        // ZTS without an explicit override: caller will resolve EG via TSRM.
+        (None, None) if is_zts => Ok(0),
         (None, None) if allow_stripped => Err(anyhow!(
             "symbol `executor_globals` not found in {label} and no \
              --executor-globals override given"
@@ -249,13 +311,44 @@ mod tests {
     }
 
     #[test]
-    fn resolve_eg_zts_error_mentions_zts_and_docs() {
-        let err = resolve_executor_globals(None, None, true, false, "/usr/bin/php8.3-zts", 0, 0)
+    fn resolve_zts_returns_none_for_nts_builds() {
+        let z = resolve_zts(None, None, false, 0x1000, "x").unwrap();
+        assert!(z.is_none());
+    }
+
+    #[test]
+    fn resolve_zts_biases_addresses() {
+        let z = resolve_zts(Some(0x100), Some(0x200), true, 0x5000_0000, "x")
+            .unwrap()
+            .unwrap();
+        assert_eq!(z.tcb_offset_fn, 0x5000_0100);
+        assert_eq!(z.eg_offset_var, 0x5000_0200);
+    }
+
+    #[test]
+    fn resolve_zts_errors_when_tcb_offset_fn_missing() {
+        let err = resolve_zts(None, Some(0x200), true, 0, "/usr/bin/php-zts")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("ZTS"), "missing ZTS hint: {err}");
-        assert!(err.contains("not yet supported"), "missing status: {err}");
-        assert!(err.contains("/usr/bin/php8.3-zts"), "missing label: {err}");
+        assert!(err.contains("tsrm_get_ls_cache_tcb_offset"), "{err}");
+        assert!(err.contains("/usr/bin/php-zts"), "missing label: {err}");
+    }
+
+    #[test]
+    fn resolve_zts_errors_when_eg_offset_var_missing() {
+        let err = resolve_zts(Some(0x100), None, true, 0, "/usr/bin/php-zts")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("executor_globals_offset"), "{err}");
+    }
+
+    #[test]
+    fn resolve_eg_zts_returns_sentinel_for_runtime_resolution() {
+        // ZTS builds don't have a static EG address — the caller is expected
+        // to resolve it per-thread via TSRM. We signal that by returning 0.
+        let addr =
+            resolve_executor_globals(None, None, true, false, "/usr/bin/php8.3-zts", 0, 0).unwrap();
+        assert_eq!(addr, 0);
     }
 
     #[test]

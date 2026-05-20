@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- ZTS (thread-safe) attach support. pfp now resolves the per-thread
+  `executor_globals` by decoding `tsrm_get_ls_cache_tcb_offset` and reading
+  the target thread's TLS-base register via a brief `ptrace` attach
+  (`FS_BASE` on x86_64, `TPIDR_EL0` on aarch64). Tested against the official
+  `php:X.Y-zts` images for 8.0–8.4 on both architectures.
+
 ## [0.1.0] - 2026-05-18
 
 Initial release.
 
 ### Added
 - Sampling profiler for PHP 8.0, 8.1, 8.2, 8.3, 8.4, and 8.5 (NTS).
+  ZTS support landed post-0.1.0; see Unreleased.
 - Linux x86_64 and aarch64 support.
 - Single-PID attach (`-p PID`) and multi-PID auto-discovery
   (`-P pgrep`, `--cmdline`, `--this-container`) with periodic rediscovery.

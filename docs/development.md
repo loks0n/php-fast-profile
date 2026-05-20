@@ -123,30 +123,46 @@ is reachable, since `pfp` selects struct offsets from the version.
 
 ## ZTS (thread-safe) support
 
-`pfp` currently supports **NTS** (non-thread-safe) PHP builds only — by far
-the common case for CLI / FPM. ZTS detection works (we recognize the build
-and produce a clear error), but per-thread `executor_globals` resolution is
-not yet implemented.
+`pfp` supports both NTS (non-thread-safe — the default for CLI/FPM) and ZTS
+(thread-safe — used by `mod_php` and some embedded SAPIs) builds. ZTS attach
+is detected automatically when the binary exports `tsrm_get_ls_cache_tcb_offset`
+and `executor_globals_offset`.
 
-If you need ZTS attach, the path is:
+How it works (`src/tls.rs`):
 
-1. Build a ZTS PHP from source with debug symbols:
-   ```sh
-   ./configure --enable-zts CFLAGS="-O0 -g"
-   make -j
-   ```
-2. Verify struct offsets (some shift between NTS and ZTS due to TSRM):
-   ```sh
-   ./scripts/dump-offsets.sh /path/to/zts/sapi/cli/php
-   ```
-3. Walk TSRM to find the calling thread's `executor_globals`:
-   - Read `tsrm_get_ls_cache` (a function returning `void**`).
-   - Disassemble its prologue to extract the TLS access pattern; or read the
-     thread-local cache directly via `/proc/PID/task/TID/...`.
-   - At offset `executor_globals_offset` in the cache, read the per-thread
-     EG pointer.
+1. Decode `tsrm_get_ls_cache_tcb_offset` — a tiny accessor that returns a
+   compile-time constant: the TLS slot offset of `_tsrm_ls_cache` relative
+   to the thread pointer. Same trick `phpspy` uses; saves us from having to
+   parse `PT_TLS` and walk `link_map`.
+2. Pick a task under `/proc/PID/task/`, briefly `ptrace`-attach it, and read
+   its TLS-base register:
+   - x86_64: `FS_BASE` (`PTRACE_GETREGS` → `regs.fs_base`)
+   - aarch64: `TPIDR_EL0` (`PTRACE_GETREGSET(NT_ARM_TLS)`)
 
-PRs welcome — file an issue with your `pahole` output to seed the layout.
+   The attach is short — read register, detach. The target thread is paused
+   for well under a millisecond.
+3. `cache_ptr = *(tls_base + tcb_offset)` (read via `process_vm_readv`).
+4. `EG = *(cache_ptr + executor_globals_offset)`.
+
+Permissions: ptrace-attach needs the same privilege as `process_vm_readv`
+(matching uid, or `CAP_SYS_PTRACE`, or `yama/ptrace_scope <= 0`). On most
+container runtimes pass `--cap-add=SYS_PTRACE`.
+
+To test ZTS locally:
+
+```sh
+docker run --rm --cap-add=SYS_PTRACE php:8.3-zts \
+  sh -c 'php -r "while(true){usleep(1000);}" & sleep 1; \
+         /shared/pfp -p $! -d 3'
+```
+
+(after building pfp into `/shared/pfp` — see "Testing against a live PHP"
+below).
+
+The struct offsets in `src/offsets.rs` are identical between NTS and ZTS for
+all supported versions (8.0–8.5) — verified via `offsetof()` against the
+official `php:X.Y-zts` images on Docker Hub. TSRM bookkeeping wraps around
+`executor_globals` rather than living inside it.
 
 ## Testing against a live PHP
 

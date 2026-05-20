@@ -28,7 +28,7 @@ pprof = ["dep:prost", "dep:flate2", "dep:prost-build"]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 object = { version = "0.36", default-features = false, features = ["read", "elf", "std"] }
-nix = { version = "0.29", features = ["process", "uio", "signal"] }
+nix = { version = "0.29", features = ["process", "uio", "signal", "ptrace"] }
 libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
