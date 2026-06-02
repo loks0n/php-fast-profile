@@ -189,8 +189,9 @@ jobs:
           sleep 1
           docker exec php-zts php -i 2>/dev/null | grep -i 'thread safety' \
             | grep -qi enabled
-          PHP_PID=$(docker exec php-zts pgrep -n -x php)
-          test -n "$PHP_PID"
+          # php is the container's PID 1 — the docker-php-entrypoint execs
+          # the command — and the php:*-zts image ships no pgrep (no procps).
+          PHP_PID=1
           docker exec php-zts /pfp -p "$PHP_PID" -d 2 -H 99 -o /tmp/out.txt
           OUT=$(docker exec php-zts cat /tmp/out.txt)
           docker rm -f php-zts
