@@ -56,10 +56,19 @@ pub fn parse_maps(raw: &str) -> Result<Vec<MapEntry>> {
 /// Docker that link points at the translator binary, not the target ELF.
 pub fn principal_binary(maps: &[MapEntry]) -> Option<&MapEntry> {
     let exe_mapping = maps.iter().find(|m| {
+        // A real ELF text segment is a *private* file-backed mapping
+        // (`r-xp`). Skip *shared* executable mappings (`r-xs`) — Swoole and
+        // other extensions place executable shared-memory pools backed by
+        // `/dev/zero (deleted)` or `/memfd:… (deleted)` at low addresses,
+        // which are not openable on-disk ELFs.
         m.perms.contains('x')
-            && m.path
-                .as_deref()
-                .is_some_and(|p| !p.starts_with('[') && !p.is_empty())
+            && m.perms.contains('p')
+            && m.path.as_deref().is_some_and(|p| {
+                !p.starts_with('[')
+                    && !p.is_empty()
+                    && !p.starts_with("/dev/")
+                    && !p.ends_with("(deleted)")
+            })
     })?;
     let path = exe_mapping.path.as_deref()?;
     // The lowest-address mapping for that file (often a r--p header before
@@ -107,6 +116,23 @@ mod tests {
         assert_eq!(p.path.as_deref(), Some("/usr/bin/php8.3"));
         // And specifically the lowest-address mapping for that file.
         assert_eq!(p.start, 0x555555554000);
+    }
+
+    #[test]
+    fn principal_binary_skips_swoole_shared_exec_mapping() {
+        // Swoole maps an executable *shared* memory pool backed by
+        // `/dev/zero (deleted)` at a lower address than the php text segment.
+        // The principal binary must still resolve to the real php ELF.
+        let swoole = "\
+5649acc00000-5649c4c00000 rw-s 00000000 00:01 4586                       /dev/zero (deleted)
+5649c4c00000-5649ccc00000 r-xs 18000000 00:01 4586                       /dev/zero (deleted)
+5649ccc00000-5649ccd69000 r--p 00000000 fe:01 656824                     /usr/local/bin/php
+5649cce00000-5649cd601000 r-xp 00200000 fe:01 656824                     /usr/local/bin/php
+";
+        let maps = parse_maps(swoole).unwrap();
+        let p = principal_binary(&maps).unwrap();
+        assert_eq!(p.path.as_deref(), Some("/usr/local/bin/php"));
+        assert_eq!(p.start, 0x5649ccc00000);
     }
 
     #[test]
