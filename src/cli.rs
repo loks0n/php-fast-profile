@@ -64,6 +64,32 @@ pub struct Args {
     #[arg(short = 'o', long)]
     pub output: Option<PathBuf>,
 
+    /// Continuously push profiles to this Pyroscope server (e.g.
+    /// http://pyroscope:4040). Enables sidecar mode; `--format`/`--output` are
+    /// ignored when set.
+    #[arg(long, env = "PYROSCOPE_URL")]
+    pub pyroscope_url: Option<String>,
+
+    /// Application name reported to Pyroscope.
+    #[arg(long, env = "PYROSCOPE_APP", default_value = "php")]
+    pub pyroscope_app: String,
+
+    /// Label attached to the Pyroscope series, `key=value`. Repeatable.
+    #[arg(long = "pyroscope-label", value_name = "K=V")]
+    pub pyroscope_label: Vec<String>,
+
+    /// How often to push accumulated profiles to Pyroscope, in seconds.
+    #[arg(long, default_value_t = 10)]
+    pub push_interval_secs: u64,
+
+    /// Bearer token for Pyroscope / Grafana Cloud auth.
+    #[arg(long, env = "PYROSCOPE_AUTH_TOKEN", hide_env_values = true)]
+    pub pyroscope_auth_token: Option<String>,
+
+    /// Tenant id for multi-tenant Pyroscope (sent as X-Scope-OrgID).
+    #[arg(long, env = "PYROSCOPE_TENANT_ID")]
+    pub pyroscope_tenant_id: Option<String>,
+
     /// Capture request info ($_SERVER URI/method/etc.).
     #[arg(long)]
     pub request_info: bool,

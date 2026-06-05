@@ -1,12 +1,15 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::io::Write;
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
 
-use crate::cli::Format;
+use crate::cli::{Args, Format};
 use crate::zend::Frame;
 
 #[cfg(feature = "pprof")]
 mod pprof_sink;
+#[cfg(feature = "pyroscope")]
+mod pyroscope_sink;
 
 pub struct SampleMeta {
     pub request_uri: Option<String>,
@@ -16,6 +19,50 @@ pub struct SampleMeta {
 pub trait Sink: Send {
     fn write_sample(&mut self, frames: &[Frame], meta: &SampleMeta) -> Result<()>;
     fn finish(&mut self) -> Result<()>;
+}
+
+/// Build the output sink from parsed args. `--pyroscope-url` selects continuous
+/// push export (sidecar mode); otherwise output is a file/stdout writer in the
+/// chosen `--format`.
+pub fn build_sink(args: &Args) -> Result<Box<dyn Sink>> {
+    if args.pyroscope_url.is_some() {
+        #[cfg(feature = "pyroscope")]
+        return Ok(Box::new(pyroscope_sink::PyroscopeSink::new(
+            pyroscope_config(args),
+        )));
+        #[cfg(not(feature = "pyroscope"))]
+        anyhow::bail!("--pyroscope-url requires the `pyroscope` feature (default-on)");
+    }
+
+    let writer: Box<dyn Write + Send> = match &args.output {
+        Some(path) => Box::new(BufWriter::new(
+            File::create(path).with_context(|| format!("creating {}", path.display()))?,
+        )),
+        None => Box::new(BufWriter::new(io::stdout())),
+    };
+    Ok(make_sink(args.format, writer))
+}
+
+#[cfg(feature = "pyroscope")]
+fn pyroscope_config(args: &Args) -> pyroscope_sink::PyroscopeConfig {
+    let app = args.pyroscope_app.clone();
+    let name = if args.pyroscope_label.is_empty() {
+        app
+    } else {
+        format!("{app}{{{}}}", args.pyroscope_label.join(","))
+    };
+    pyroscope_sink::PyroscopeConfig {
+        url: args
+            .pyroscope_url
+            .clone()
+            .unwrap_or_default()
+            .trim_end_matches('/')
+            .to_string(),
+        name,
+        auth_token: args.pyroscope_auth_token.clone(),
+        tenant_id: args.pyroscope_tenant_id.clone(),
+        push_interval: std::time::Duration::from_secs(args.push_interval_secs.max(1)),
+    }
 }
 
 pub fn make_sink(format: Format, w: Box<dyn Write + Send>) -> Box<dyn Sink> {

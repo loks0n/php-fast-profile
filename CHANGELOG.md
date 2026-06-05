@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Continuous **Pyroscope** export (sidecar mode). `--pyroscope-url` makes pfp
+  run continuously and push a gzipped pprof profile to a Grafana Pyroscope
+  server every `--push-interval-secs` (default 10) instead of writing a file.
+  Configurable via `--pyroscope-app`, repeatable `--pyroscope-label`, and auth
+  via `--pyroscope-auth-token` / `--pyroscope-tenant-id`. Push failures are
+  logged and never interrupt sampling. Pulls in a small synchronous HTTP
+  client behind the default-on `pyroscope` feature.
+- Distroless multi-arch (amd64/arm64) container image, published to
+  `ghcr.io/loks0n/php-fast-profile` on each release, for running pfp as a
+  profiling sidecar.
+
+### Changed
+- When the target binary's path (from its `/proc/PID/maps`) is not present in
+  pfp's own mount namespace, fall back to `/proc/PID/root/<path>`. This lets a
+  sidecar in a separate container resolve the profiled binary's symbols.
+
 ## [0.1.1] - 2026-06-02
 
 ### Added

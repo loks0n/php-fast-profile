@@ -199,3 +199,85 @@ jobs:
           test "$(echo "$OUT" | grep -c '^0 ')" -ge 100
           echo "$OUT" | grep -q 'W::a'
           echo "$OUT" | grep -q 'W::b'
+
+  smoke-pyroscope:
+    name: smoke-pyroscope
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      pyroscope:
+        image: grafana/pyroscope:latest
+        ports:
+          - 4040:4040
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: x86_64-unknown-linux-gnu-smoke-pyroscope
+      - name: install Sury PHP 8.3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl ca-certificates gnupg lsb-release
+          curl -sSLo /tmp/sury.gpg https://packages.sury.org/php/apt.gpg
+          sudo install -m 644 /tmp/sury.gpg /usr/share/keyrings/sury.gpg
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/keyrings/sury.gpg] https://packages.sury.org/php/ ${VERSION_CODENAME} main" \
+            | sudo tee /etc/apt/sources.list.d/sury.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends php8.3-cli
+      - name: build
+        run: cargo build --release
+      - name: allow ptrace
+        run: echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope || true
+      - name: push profiles to pyroscope and query them back
+        run: |
+          set -euo pipefail
+          cat > /tmp/spin.php <<'PHP'
+          <?php
+          class W { public function spin(): never { while (true) $this->a(); }
+          public function a(): void { $this->b(); }
+          public function b(): void { usleep(500); } }
+          (new W())->spin();
+          PHP
+          php8.3 /tmp/spin.php &
+          PHP_PID=$!
+          sleep 1
+          # Run pfp continuously in sidecar/push mode; keep pushing while we poll.
+          RUST_LOG=pfp=debug ./target/release/pfp \
+            -p "$PHP_PID" --pyroscope-url http://localhost:4040 \
+            --pyroscope-app pfp-smoke --push-interval-secs 2 -H 99 \
+            > /tmp/pfp.log 2>&1 &
+          PFP_PID=$!
+
+          # 1) Hard gate: pfp attached and pushed without errors. Pyroscope
+          #    answers /ingest with 422 on a malformed pprof (which the sink
+          #    logs as "push failed"), so a clean push proves the profile was
+          #    parsed and accepted end-to-end by the server.
+          sleep 12
+          cat /tmp/pfp.log
+          grep -q 'attached pid=' /tmp/pfp.log
+          grep -q 'pushed profile to pyroscope' /tmp/pfp.log
+          ! grep -q 'push failed' /tmp/pfp.log
+
+          # 2) Best-effort: confirm the profile is queryable with our PHP frames.
+          #    Pyroscope's ingest->queryable lag is timing-dependent, so this is
+          #    logged but does not gate the job (the push gate above is the
+          #    deterministic e2e signal).
+          for i in $(seq 1 30); do
+            now=$(date +%s%3N); from=$((now - 600000))
+            body=$(printf '{"profile_typeID":"process_cpu:samples:count::","label_selector":"{service_name=\\"pfp-smoke\\"}","start":%s,"end":%s}' "$from" "$now")
+            names=$(curl -s -X POST \
+              http://localhost:4040/querier.v1.QuerierService/SelectMergeStacktraces \
+              -H 'Content-Type: application/json' -d "$body" \
+              | python3 -c 'import sys,json; print("\n".join(json.load(sys.stdin).get("flamegraph",{}).get("names",[])))' 2>/dev/null || true)
+            if echo "$names" | grep -q 'W::a' && echo "$names" | grep -q 'W::b'; then
+              echo "queried PHP frames back from pyroscope:"; echo "$names"; break
+            fi
+            sleep 3
+          done
+          kill "$PFP_PID" "$PHP_PID" 2>/dev/null || true
