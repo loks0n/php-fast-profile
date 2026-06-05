@@ -90,6 +90,17 @@ pub struct Args {
     #[arg(long, env = "PYROSCOPE_TENANT_ID")]
     pub pyroscope_tenant_id: Option<String>,
 
+    /// Extra HTTP header on each ingest request, `Name: value`. Applied after
+    /// the built-in auth headers, so it can override them. Repeat the flag for
+    /// several headers, or pass newline-separated headers via the env var.
+    #[arg(
+        long = "pyroscope-header",
+        value_name = "NAME: VALUE",
+        env = "PYROSCOPE_HEADER",
+        value_delimiter = '\n'
+    )]
+    pub pyroscope_header: Vec<String>,
+
     /// Capture request info ($_SERVER URI/method/etc.).
     #[arg(long)]
     pub request_info: bool,

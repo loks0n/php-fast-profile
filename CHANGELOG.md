@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run continuously and push a gzipped pprof profile to a Grafana Pyroscope
   server every `--push-interval-secs` (default 10) instead of writing a file.
   Configurable via `--pyroscope-app`, repeatable `--pyroscope-label`, and auth
-  via `--pyroscope-auth-token` / `--pyroscope-tenant-id`. Push failures are
+  via `--pyroscope-auth-token` / `--pyroscope-tenant-id`, plus arbitrary
+  ingest headers via repeatable `--pyroscope-header "Name: value"`. Push failures are
   logged and never interrupt sampling. Pulls in a small synchronous HTTP
   client behind the default-on `pyroscope` feature.
 - Distroless multi-arch (amd64/arm64) container image, published to

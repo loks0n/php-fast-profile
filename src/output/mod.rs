@@ -61,6 +61,17 @@ fn pyroscope_config(args: &Args) -> pyroscope_sink::PyroscopeConfig {
         name,
         auth_token: args.pyroscope_auth_token.clone(),
         tenant_id: args.pyroscope_tenant_id.clone(),
+        headers: args
+            .pyroscope_header
+            .iter()
+            .filter_map(|h| match h.split_once(':') {
+                Some((k, v)) => Some((k.trim().to_string(), v.trim().to_string())),
+                None => {
+                    tracing::warn!("ignoring malformed --pyroscope-header (no ':'): {h}");
+                    None
+                }
+            })
+            .collect(),
         push_interval: std::time::Duration::from_secs(args.push_interval_secs.max(1)),
     }
 }

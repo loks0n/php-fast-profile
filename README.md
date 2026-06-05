@@ -111,6 +111,10 @@ spec:
 
 Grafana Cloud and multi-tenant servers are supported via
 `--pyroscope-auth-token` (or `PYROSCOPE_AUTH_TOKEN`) and `--pyroscope-tenant-id`.
+For any other gateway auth scheme, set arbitrary headers with repeatable
+`--pyroscope-header "Name: value"` (e.g. `--pyroscope-header "X-API-Key: …"`),
+or via the `PYROSCOPE_HEADER` env var (one header, or several separated by
+newlines) to inject a secret without putting it on the command line.
 
 ### CLI flags
 
@@ -132,6 +136,7 @@ Grafana Cloud and multi-tenant servers are supported via
 | `--push-interval-secs <N>` | Push cadence in sidecar mode (default 10) |
 | `--pyroscope-auth-token <T>` | Bearer token (Grafana Cloud); env `PYROSCOPE_AUTH_TOKEN` |
 | `--pyroscope-tenant-id <ID>` | Tenant id, sent as `X-Scope-OrgID` |
+| `--pyroscope-header <N: V>` | Extra ingest header, e.g. `X-API-Key: …` (repeatable); env `PYROSCOPE_HEADER` |
 | `--request-info` | Capture `$_SERVER` URI/method per sample |
 | `--php-version <V>` | Force version (e.g. `8.4`) on stripped binaries |
 | `--executor-globals <ADDR>` | Override EG address on stripped binaries |

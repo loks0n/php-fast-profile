@@ -13,6 +13,8 @@ pub struct PyroscopeConfig {
     pub name: String,
     pub auth_token: Option<String>,
     pub tenant_id: Option<String>,
+    /// Extra request headers, applied after the built-in auth headers.
+    pub headers: Vec<(String, String)>,
     pub push_interval: Duration,
 }
 
@@ -78,6 +80,10 @@ impl PyroscopeSink {
         }
         if let Some(tenant) = &self.cfg.tenant_id {
             req = req.set("X-Scope-OrgID", tenant);
+        }
+        // Applied last so an explicit --pyroscope-header can override the above.
+        for (name, value) in &self.cfg.headers {
+            req = req.set(name, value);
         }
 
         req.send_bytes(&body)
