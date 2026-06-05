@@ -14,8 +14,17 @@ mod pprof {
     include!(concat!(env!("OUT_DIR"), "/perftools.profiles.rs"));
 }
 
-pub struct PprofSink {
-    w: Option<Box<dyn Write + Send>>,
+fn now_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(0)
+}
+
+/// Accumulates samples into a pprof v3 profile and encodes them as gzipped
+/// protobuf. Shared by `PprofSink` (write once at shutdown) and the Pyroscope
+/// sink (encode + reset on every push window).
+pub struct PprofBuilder {
     strings: Vec<String>,
     string_idx: HashMap<String, i64>,
     functions: Vec<pprof::Function>,
@@ -23,13 +32,13 @@ pub struct PprofSink {
     locations: Vec<pprof::Location>,
     location_key: HashMap<(u64, i64), u64>,
     samples: HashMap<Vec<u64>, i64>,
-    started_nanos: i64,
+    /// Start of the current accumulation window, unix nanos.
+    window_start_nanos: i64,
 }
 
-impl PprofSink {
-    pub fn new(w: Box<dyn Write + Send>) -> Self {
-        let mut s = Self {
-            w: Some(w),
+impl PprofBuilder {
+    pub fn new() -> Self {
+        let mut b = Self {
             strings: Vec::new(),
             string_idx: HashMap::new(),
             functions: Vec::new(),
@@ -37,14 +46,17 @@ impl PprofSink {
             locations: Vec::new(),
             location_key: HashMap::new(),
             samples: HashMap::new(),
-            started_nanos: SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map(|d| d.as_nanos() as i64)
-                .unwrap_or(0),
+            window_start_nanos: now_nanos(),
         };
         // pprof requires string_table[0] == "".
-        s.intern("");
-        s
+        b.intern("");
+        b
+    }
+
+    // Only the Pyroscope sink consults this before a push.
+    #[cfg_attr(not(feature = "pyroscope"), allow(dead_code))]
+    pub fn is_empty(&self) -> bool {
+        self.samples.is_empty()
     }
 
     fn intern(&mut self, s: &str) -> i64 {
@@ -88,10 +100,9 @@ impl PprofSink {
         self.location_key.insert((function_id, line), id);
         id
     }
-}
 
-impl Sink for PprofSink {
-    fn write_sample(&mut self, frames: &[Frame], _meta: &SampleMeta) -> Result<()> {
+    /// Fold one captured stack into the aggregate.
+    pub fn add(&mut self, frames: &[Frame]) {
         let mut location_ids = Vec::with_capacity(frames.len());
         for f in frames {
             let name = match &f.class {
@@ -105,14 +116,15 @@ impl Sink for PprofSink {
             location_ids.push(lid);
         }
         *self.samples.entry(location_ids).or_insert(0) += 1;
-        Ok(())
     }
 
-    fn finish(&mut self) -> Result<()> {
+    /// Encode the current window to gzipped pprof and **reset** the builder for
+    /// the next window. Returns `(gzipped_bytes, window_start_nanos, window_end_nanos)`.
+    pub fn take_gzipped(&mut self) -> Result<(Vec<u8>, i64, i64)> {
         let samples_unit = self.intern("count");
         let samples_type = self.intern("samples");
 
-        let samples = self
+        let sample = self
             .samples
             .drain()
             .map(|(loc_ids, count)| pprof::Sample {
@@ -122,25 +134,23 @@ impl Sink for PprofSink {
             })
             .collect();
 
-        let now_nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as i64)
-            .unwrap_or(0);
+        let start = self.window_start_nanos;
+        let end = now_nanos();
 
         let profile = pprof::Profile {
             sample_type: vec![pprof::ValueType {
                 r#type: samples_type,
                 unit: samples_unit,
             }],
-            sample: samples,
+            sample,
             mapping: vec![],
             location: std::mem::take(&mut self.locations),
             function: std::mem::take(&mut self.functions),
             string_table: std::mem::take(&mut self.strings),
             drop_frames: 0,
             keep_frames: 0,
-            time_nanos: self.started_nanos,
-            duration_nanos: now_nanos - self.started_nanos,
+            time_nanos: start,
+            duration_nanos: (end - start).max(0),
             period_type: None,
             period: 0,
             comment: vec![],
@@ -150,10 +160,82 @@ impl Sink for PprofSink {
         let mut buf = Vec::with_capacity(4096);
         profile.encode(&mut buf)?;
 
-        let writer = self.w.take().expect("pprof finish called twice");
-        let mut gz = GzEncoder::new(writer, Compression::default());
+        let mut gz = GzEncoder::new(Vec::with_capacity(buf.len() / 2), Compression::default());
         gz.write_all(&buf)?;
-        gz.finish()?.flush()?;
+        let gzipped = gz.finish()?;
+
+        // Reset interning state for the next window.
+        self.string_idx.clear();
+        self.function_key.clear();
+        self.location_key.clear();
+        self.intern("");
+        self.window_start_nanos = end;
+
+        Ok((gzipped, start, end))
+    }
+}
+
+pub struct PprofSink {
+    w: Option<Box<dyn Write + Send>>,
+    builder: PprofBuilder,
+}
+
+impl PprofSink {
+    pub fn new(w: Box<dyn Write + Send>) -> Self {
+        Self {
+            w: Some(w),
+            builder: PprofBuilder::new(),
+        }
+    }
+}
+
+impl Sink for PprofSink {
+    fn write_sample(&mut self, frames: &[Frame], _meta: &SampleMeta) -> Result<()> {
+        self.builder.add(frames);
         Ok(())
+    }
+
+    fn finish(&mut self) -> Result<()> {
+        let (bytes, _, _) = self.builder.take_gzipped()?;
+        let mut writer = self.w.take().expect("pprof finish called twice");
+        writer.write_all(&bytes)?;
+        writer.flush()?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn frame(function: &str) -> Frame {
+        Frame {
+            class: None,
+            function: Arc::from(function),
+            file: Some(Arc::from("/t.php")),
+            line: 1,
+        }
+    }
+
+    #[test]
+    fn take_gzipped_emits_gzip_and_resets() {
+        let mut b = PprofBuilder::new();
+        assert!(b.is_empty());
+        b.add(&[frame("a"), frame("b")]);
+        assert!(!b.is_empty());
+
+        let (bytes, start, end) = b.take_gzipped().unwrap();
+        // gzip magic.
+        assert_eq!(&bytes[..2], &[0x1f, 0x8b]);
+        assert!(end >= start);
+        // Window is reset: no samples carried over, and the window advances.
+        assert!(b.is_empty());
+        assert_eq!(b.window_start_nanos, end);
+
+        // A second window still produces a valid, independent profile.
+        b.add(&[frame("c")]);
+        let (bytes2, _, _) = b.take_gzipped().unwrap();
+        assert_eq!(&bytes2[..2], &[0x1f, 0x8b]);
     }
 }

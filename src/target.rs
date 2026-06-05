@@ -37,8 +37,16 @@ impl Target {
 
         // mmap rather than read — keeps the ELF as a shared file-backed
         // mapping instead of dirtying anon pages on every worker attach.
-        let elf_file =
-            std::fs::File::open(&bin_path).with_context(|| format!("opening {bin_path}"))?;
+        //
+        // The path is as listed in the target's /proc/PID/maps, which lives in
+        // the target's mount namespace. When we run as a sidecar in a separate
+        // container we don't have that file, so fall back to reaching into the
+        // target's root via /proc/PID/root.
+        let elf_file = std::fs::File::open(&bin_path)
+            .or_else(|_| std::fs::File::open(format!("/proc/{pid}/root{bin_path}")))
+            .with_context(|| {
+                format!("opening {bin_path} (also tried /proc/{pid}/root{bin_path})")
+            })?;
         let elf_map = unsafe { memmap2::Mmap::map(&elf_file) }
             .with_context(|| format!("mmaping {bin_path}"))?;
         let symbols = symbols::resolve(

@@ -34,6 +34,10 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "CC0-1.0",
+    # The Mozilla CA root bundle shipped by webpki-roots (via ureq's rustls TLS).
+    # A permissive data license; bundling the roots lets the distroless image
+    # do HTTPS without a system trust store.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 

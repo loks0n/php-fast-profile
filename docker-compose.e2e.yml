@@ -1,0 +1,49 @@
+# End-to-end harness for continuous Pyroscope export.
+#
+#   docker compose -f docker-compose.e2e.yml up --build -d
+#   # wait ~15s, then:
+#   curl 'http://localhost:4040/pyroscope/render?query=pfp-e2e.samples{}&from=now-5m&until=now'
+#   docker compose -f docker-compose.e2e.yml down
+#
+# The pfp sidecar shares the php container's PID namespace and reaches the php
+# binary through /proc/<pid>/root, exactly as a Kubernetes sidecar with
+# shareProcessNamespace would.
+services:
+  pyroscope:
+    image: grafana/pyroscope:latest
+    ports:
+      - "4040:4040"
+
+  php:
+    image: php:8.3-cli
+    container_name: pfp-e2e-php
+    # A CPU-busy loop with a couple of named frames so the flamegraph is non-trivial.
+    # `$` is doubled to `$$` so docker-compose does not treat it as variable
+    # interpolation; PHP sees single `$`.
+    command:
+      - php
+      - -r
+      - |
+        function inner($$n){ $$s=0.0; for($$i=0;$$i<$$n;$$i++){ $$s+=sqrt($$i)*sin($$i); } return $$s; }
+        function outer(){ for($$i=0;$$i<200;$$i++){ inner(100000); } }
+        while(true){ outer(); }
+
+  pfp:
+    build: .
+    pid: "container:pfp-e2e-php"
+    cap_add:
+      - SYS_PTRACE
+    command:
+      - -P
+      - php
+      - --pyroscope-url
+      - http://pyroscope:4040
+      - --pyroscope-app
+      - pfp-e2e
+      - --push-interval-secs
+      - "2"
+      - --rate-hz
+      - "99"
+    depends_on:
+      - pyroscope
+      - php

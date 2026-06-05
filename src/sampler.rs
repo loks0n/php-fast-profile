@@ -1,7 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -43,13 +41,7 @@ impl Sampler {
             target.exe
         );
 
-        let writer: Box<dyn Write + Send> = match &args.output {
-            Some(path) => Box::new(BufWriter::new(
-                File::create(path).with_context(|| format!("creating {}", path.display()))?,
-            )),
-            None => Box::new(BufWriter::new(io::stdout())),
-        };
-        let sink = output::make_sink(args.format, writer);
+        let sink = output::build_sink(args)?;
 
         Ok(Self {
             target,
@@ -257,13 +249,7 @@ pub fn run_multi(
         ctrlc_like::install(move || stop.store(true, Ordering::SeqCst))?;
     }
 
-    let writer: Box<dyn Write + Send> = match &args.output {
-        Some(path) => Box::new(BufWriter::new(
-            File::create(path).with_context(|| format!("creating {}", path.display()))?,
-        )),
-        None => Box::new(BufWriter::new(io::stdout())),
-    };
-    let mut sink = output::make_sink(args.format, writer);
+    let mut sink = output::build_sink(args)?;
 
     let (tx, rx) = mpsc::channel::<SampleMsg>();
 

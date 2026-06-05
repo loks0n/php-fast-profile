@@ -71,7 +71,50 @@ pfp -P php-fpm --this-container -d 60 -H 99 -f pprof -o profile.pb.gz
 
 # Live top view.
 pfp -P php-fpm -f top
+
+# Continuously push profiles to Pyroscope (sidecar mode).
+pfp -P php-fpm --this-container --pyroscope-url http://pyroscope:4040 --pyroscope-app my-app
 ```
+
+### Continuous profiling (Pyroscope sidecar)
+
+With `--pyroscope-url`, pfp runs forever and pushes a gzipped pprof profile to
+a [Grafana Pyroscope](https://grafana.com/oss/pyroscope/) server every
+`--push-interval-secs` (default 10) instead of writing a file. A prebuilt
+distroless image is published to GHCR on each release:
+
+```sh
+docker run --rm \
+  --pid=container:<php-container> --cap-add=SYS_PTRACE \
+  ghcr.io/loks0n/php-fast-profile:latest \
+  -P php --pyroscope-url http://pyroscope:4040 --pyroscope-app my-app
+```
+
+As a Kubernetes sidecar, enable `shareProcessNamespace` so pfp can see (and
+read `/proc/<pid>/root` of) the app container, and grant `SYS_PTRACE`:
+
+```yaml
+spec:
+  shareProcessNamespace: true
+  containers:
+    - name: app           # your php container
+      image: my-php-app
+    - name: pfp
+      image: ghcr.io/loks0n/php-fast-profile:latest
+      args: ["-P", "php", "--this-container",
+             "--pyroscope-url", "http://pyroscope:4040",
+             "--pyroscope-app", "my-app"]
+      securityContext:
+        capabilities:
+          add: ["SYS_PTRACE"]
+```
+
+Grafana Cloud and multi-tenant servers are supported via
+`--pyroscope-auth-token` (or `PYROSCOPE_AUTH_TOKEN`) and `--pyroscope-tenant-id`.
+For any other gateway auth scheme, set arbitrary headers with repeatable
+`--pyroscope-header "Name: value"` (e.g. `--pyroscope-header "X-API-Key: …"`),
+or via the `PYROSCOPE_HEADER` env var (one header, or several separated by
+newlines) to inject a secret without putting it on the command line.
 
 ### CLI flags
 
@@ -87,6 +130,13 @@ pfp -P php-fpm -f top
 | `-s, --max-depth <N>` | Cap stack depth (default 256) |
 | `-f, --format <FMT>` | `stacks`, `folded`, `pprof`, or `top` |
 | `-o, --output <PATH>` | Output file (default stdout) |
+| `--pyroscope-url <URL>` | Continuously push to a Pyroscope server (sidecar mode) |
+| `--pyroscope-app <NAME>` | Application name reported to Pyroscope (default `php`) |
+| `--pyroscope-label <K=V>` | Label on the Pyroscope series (repeatable) |
+| `--push-interval-secs <N>` | Push cadence in sidecar mode (default 10) |
+| `--pyroscope-auth-token <T>` | Bearer token (Grafana Cloud); env `PYROSCOPE_AUTH_TOKEN` |
+| `--pyroscope-tenant-id <ID>` | Tenant id, sent as `X-Scope-OrgID` |
+| `--pyroscope-header <N: V>` | Extra ingest header, e.g. `X-API-Key: …` (repeatable); env `PYROSCOPE_HEADER` |
 | `--request-info` | Capture `$_SERVER` URI/method per sample |
 | `--php-version <V>` | Force version (e.g. `8.4`) on stripped binaries |
 | `--executor-globals <ADDR>` | Override EG address on stripped binaries |
@@ -122,8 +172,9 @@ new fpm workers.
 - [x] `stacks` / `folded` / `pprof` / `top` output
 - [x] Container-aware attach
 - [x] Stripped-binary support (with manual EG override)
+- [x] Continuous Pyroscope push mode + distroless sidecar image on GHCR
 - [ ] macOS (requires Apple-signed binary; tracked as future work)
-- [ ] Pyroscope / OTLP push mode (planned as a sidecar binary)
+- [ ] Native OTLP profiles export (Pyroscope/Alloy can receive OTLP today)
 
 ## Documentation
 

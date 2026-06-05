@@ -17,16 +17,19 @@ name = "pfp"
 path = "src/main.rs"
 
 [features]
-default = ["tui", "pprof"]
+default = ["tui", "pprof", "pyroscope"]
 # Live `top`-style display. Pulls in ratatui + crossterm.
 tui = ["dep:ratatui", "dep:crossterm"]
 # pprof v3 protobuf output. Pulls in prost + flate2 + the build-time
 # protoc dependency.
 pprof = ["dep:prost", "dep:flate2", "dep:prost-build"]
+# Continuous push export to a Pyroscope server (sidecar mode). Reuses the
+# pprof builder and adds a small synchronous HTTP client.
+pyroscope = ["pprof", "dep:ureq"]
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 object = { version = "0.36", default-features = false, features = ["read", "elf", "std"] }
 nix = { version = "0.29", features = ["process", "uio", "signal", "ptrace"] }
 libc = "0.2"
@@ -37,6 +40,7 @@ prost = { version = "0.13", optional = true }
 flate2 = { version = "1", optional = true }
 ratatui = { version = "0.29", optional = true }
 crossterm = { version = "0.28", optional = true }
+ureq = { version = "2", optional = true }
 
 [build-dependencies]
 prost-build = { version = "0.13", optional = true }
