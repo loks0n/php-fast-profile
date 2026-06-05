@@ -7,12 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-06-02
+
 ### Added
 - ZTS (thread-safe) attach support. pfp now resolves the per-thread
   `executor_globals` by decoding `tsrm_get_ls_cache_tcb_offset` and reading
   the target thread's TLS-base register via a brief `ptrace` attach
   (`FS_BASE` on x86_64, `TPIDR_EL0` on aarch64). Tested against the official
   `php:X.Y-zts` images for 8.0–8.4 on both architectures.
+
+### Fixed
+- Skip shared and deleted executable mappings when picking the principal
+  binary, so the PHP binary is resolved correctly when the address space
+  contains memfd/deleted exec regions.
 
 ## [0.1.0] - 2026-05-18
 

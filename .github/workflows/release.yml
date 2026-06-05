@@ -3,12 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "tag to release (e.g. v0.1.0)"
-        required: true
+      - "[0-9]+.[0-9]+.[0-9]+"
 
 permissions:
   contents: write
@@ -57,7 +52,7 @@ jobs:
       - name: package
         run: |
           set -eu
-          tag="${GITHUB_REF_NAME:-${{ github.event.inputs.tag }}}"
+          tag="${GITHUB_REF_NAME}"
           out="pfp-${tag}-${{ matrix.target }}"
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/pfp" "dist/${out}"
@@ -84,7 +79,7 @@ jobs:
       - name: create or update release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          tag_name: ${{ github.ref_name }}
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true
