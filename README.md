@@ -138,6 +138,7 @@ newlines) to inject a secret without putting it on the command line.
 | `--pyroscope-tenant-id <ID>` | Tenant id, sent as `X-Scope-OrgID` |
 | `--pyroscope-header <N: V>` | Extra ingest header, e.g. `X-API-Key: …` (repeatable); env `PYROSCOPE_HEADER` |
 | `--request-info` | Capture `$_SERVER` URI/method per sample |
+| `--drop-leaf <FUNCTION>` | Drop samples whose innermost frame is `FUNCTION` (`Class::method` or `function`); repeatable. Hides an event loop's idle wait, e.g. `--drop-leaf 'Swoole\Server::start'` |
 | `--php-version <V>` | Force version (e.g. `8.4`) on stripped binaries |
 | `--executor-globals <ADDR>` | Override EG address on stripped binaries |
 
