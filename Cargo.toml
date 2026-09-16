@@ -1,6 +1,6 @@
 [package]
 name = "php-fast-profile"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Sampling profiler for PHP 8.0+"

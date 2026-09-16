@@ -7,12 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-16
+
 ### Added
 - `--drop-leaf <FUNCTION>` (repeatable) drops samples whose innermost frame
   is that function. Sampling is wall-clock, so an event-loop server that parks
   idle workers inside a PHP call (Swoole workers wait in `Swoole\Server::start`)
   reports that call as most of every profile; dropping it leaves busy time
   only. The sample rate per process still shows the idle share.
+
+## [0.2.0] - 2026-06-05
+
+### Added
 - Continuous **Pyroscope** export (sidecar mode). `--pyroscope-url` makes pfp
   run continuously and push a gzipped pprof profile to a Grafana Pyroscope
   server every `--push-interval-secs` (default 10) instead of writing a file.
