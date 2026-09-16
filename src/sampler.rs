@@ -21,6 +21,23 @@ pub struct Sampler {
     sink: Box<dyn Sink>,
     capture_request_info: bool,
     max_depth: usize,
+    drop_leaf: Vec<String>,
+}
+
+/// True when the innermost frame renders as one of `names` (`Class::method`
+/// or a bare function), the same spelling the outputs use. Frames are stored
+/// innermost first.
+pub fn leaf_is_any(frames: &[Frame], names: &[String]) -> bool {
+    let Some(leaf) = frames.first() else {
+        return false;
+    };
+    names
+        .iter()
+        .any(|name| match (&leaf.class, name.split_once("::")) {
+            (Some(class), Some((c, f))) => &**class == c && &*leaf.function == f,
+            (None, None) => &*leaf.function == name.as_str(),
+            _ => false,
+        })
 }
 
 impl Sampler {
@@ -48,6 +65,7 @@ impl Sampler {
             sink,
             capture_request_info: args.request_info,
             max_depth: args.max_depth,
+            drop_leaf: args.drop_leaf.clone(),
         })
     }
 
@@ -103,7 +121,7 @@ impl Sampler {
 
     fn sample_once(&mut self) -> Result<()> {
         let frames = self.target.capture_stack(self.max_depth)?;
-        if frames.is_empty() {
+        if frames.is_empty() || leaf_is_any(&frames, &self.drop_leaf) {
             return Ok(());
         }
         let meta = if self.capture_request_info {
@@ -140,10 +158,12 @@ pub fn run_top(args: &Args, interval: Duration, duration: Option<Duration>) -> R
     let max_depth = args.max_depth;
     let executor_globals_override = args.executor_globals;
     let php_version_string = args.php_version.clone();
+    let drop_leaf = Arc::new(args.drop_leaf.clone());
 
     let php_version_string = Arc::new(php_version_string);
     let spawn_sampler = |pid: i32, tx: mpsc::Sender<Vec<Frame>>, stop: Arc<AtomicBool>| {
         let php_version_string = Arc::clone(&php_version_string);
+        let drop_leaf = Arc::clone(&drop_leaf);
         thread::Builder::new()
             .name(format!("pfp-top-{pid}"))
             .stack_size(WORKER_STACK_SIZE)
@@ -171,7 +191,7 @@ pub fn run_top(args: &Args, interval: Duration, duration: Option<Duration>) -> R
                         next = Instant::now() + interval;
                     }
                     match target.capture_stack(max_depth) {
-                        Ok(frames) if !frames.is_empty() => {
+                        Ok(frames) if !frames.is_empty() && !leaf_is_any(&frames, &drop_leaf) => {
                             if tx.send(frames).is_err() {
                                 break;
                             }
@@ -264,6 +284,7 @@ pub fn run_multi(
     let request_info = args.request_info;
     let executor_globals_override = args.executor_globals;
     let php_version_string = args.php_version.clone();
+    let drop_leaf = Arc::new(args.drop_leaf.clone());
 
     let start = Instant::now();
     let rediscover_every = Duration::from_secs(args.rediscover_secs.max(1));
@@ -291,6 +312,7 @@ pub fn run_multi(
 
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
+        let drop_leaf = Arc::clone(&drop_leaf);
         let join = thread::Builder::new()
             .name(format!("pfp-{pid}"))
             .stack_size(WORKER_STACK_SIZE)
@@ -318,7 +340,7 @@ pub fn run_multi(
                             continue;
                         }
                     };
-                    if frames.is_empty() {
+                    if frames.is_empty() || leaf_is_any(&frames, &drop_leaf) {
                         continue;
                     }
                     let meta = if request_info {
@@ -451,5 +473,57 @@ mod ctrlc_like {
             signal::signal(Signal::SIGTERM, SigHandler::Handler(on_signal))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::leaf_is_any;
+    use crate::zend::Frame;
+    use std::sync::Arc;
+
+    fn frame(class: Option<&str>, function: &str) -> Frame {
+        Frame {
+            function: Arc::from(function),
+            class: class.map(Arc::from),
+            file: None,
+            line: 0,
+        }
+    }
+
+    #[test]
+    fn matches_the_innermost_frame_only() {
+        let names = vec!["Swoole\\Server::start".to_string()];
+        // An idle Swoole worker: the server call is the whole stack.
+        assert!(leaf_is_any(
+            &[frame(Some("Swoole\\Server"), "start")],
+            &names
+        ));
+        // A working one: the same call sits below the request, so it stays.
+        let busy = [
+            frame(None, "json_decode"),
+            frame(Some("Utopia\\Http\\Http"), "execute"),
+            frame(Some("Swoole\\Server"), "start"),
+        ];
+        assert!(!leaf_is_any(&busy, &names));
+    }
+
+    #[test]
+    fn distinguishes_methods_from_functions_of_the_same_name() {
+        let method = [frame(Some("Swoole\\Server"), "start")];
+        let function = [frame(None, "start")];
+        assert!(!leaf_is_any(&method, &["start".to_string()]));
+        assert!(!leaf_is_any(
+            &function,
+            &["Swoole\\Server::start".to_string()]
+        ));
+        assert!(leaf_is_any(&function, &["start".to_string()]));
+        assert!(!leaf_is_any(&method, &["Other\\Server::start".to_string()]));
+    }
+
+    #[test]
+    fn empty_lists_drop_nothing() {
+        assert!(!leaf_is_any(&[frame(None, "start")], &[]));
+        assert!(!leaf_is_any(&[], &["start".to_string()]));
     }
 }

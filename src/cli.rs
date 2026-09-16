@@ -105,6 +105,16 @@ pub struct Args {
     #[arg(long)]
     pub request_info: bool,
 
+    /// Drop samples whose innermost frame is this function, written as
+    /// `Class::method` or `function`. Repeatable. An event-loop server parks
+    /// its idle workers inside a PHP call (Swoole workers wait in
+    /// `Swoole\Server::start`), so with wall-clock sampling that call is most
+    /// of every profile and the frames doing work are a sliver of the graph.
+    /// Dropping it leaves busy time only, at the cost of the idle share, which
+    /// the sample rate per process still tells you.
+    #[arg(long = "drop-leaf", value_name = "FUNCTION")]
+    pub drop_leaf: Vec<String>,
+
     /// Force the PHP minor version (e.g. "8.4") when symbols are unavailable
     /// to determine it. Required only for fully stripped binaries.
     #[arg(long)]
